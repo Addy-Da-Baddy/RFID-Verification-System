@@ -17,20 +17,24 @@ signed int row, col;
 #define MODE_BUTTON (1<<16)
 unsigned char mode = 0; // 0: Check, 1: Registration
 
-// Hardcoded IDs (4-digit) 
-unsigned int registeredIDs[10] = {1234, 5678, 9012};
+// Increased limit to 20
+#define MAX_IDS 20
+unsigned int registeredIDs[MAX_IDS] = {1234, 5678, 9012};
 unsigned int totalIDs = 3;
 
-unsigned int MatrixMap[3][3] = {
-    {0, 1, 2},
-    {3, 4, 5},
-    {6, 7, 8}
+// Updated 4x4 Keypad mappings
+unsigned int MatrixMap[4][4] = {
+    {0, 1, 2, 3},
+    {4, 5, 6, 7},
+    {8, 9,10,11},
+    {12,13,14,15}
 };
 
-unsigned char KeyMap[9] = {
-    '1','2','3',
-    '4','5','6',
-    '7','8','9'
+unsigned char KeyMap[16] = {
+    '1','2','3','A',
+    '4','5','6','B',
+    '7','8','9','C',
+    '*','0','#','D'
 };
 
 void delayMS(unsigned int milliseconds);
@@ -42,29 +46,34 @@ void port_write(void);
 void delay_lcd(unsigned int r1);
 void buzzer_success(void);
 void buzzer_error(void);
+void lcd_init(void);
+void debounce_button(void);
 
 int main(void) {
     SystemInit();
     SystemCoreClockUpdate();
 
-    // Matrix keypad config
+    // Keypad config: P2.10–P2.13 output (rows)
     LPC_PINCON->PINSEL3 = 0;           
     LPC_PINCON->PINSEL4 = 0;           
-    LPC_GPIO2->FIODIR = 0x00003C00;    // P2.10-P2.13 output (rows)
-    LPC_GPIO1->FIODIR = 0;             // P1.23-P1.26 input (cols)
+    LPC_GPIO2->FIODIR = 0x00003C00;    // P2.10-P2.13 output
+    LPC_GPIO1->FIODIR &= ~(0x07800000); // P1.23-P1.26 input
 
-    // LCD & buzzer config
+    // LCD & Buzzer config
     LPC_GPIO0->FIODIR |= DT_CTRL | RS_CTRL | EN_CTRL;
     LPC_GPIO0->FIODIR |= BUZZER_LED;
 
-    // Mode button P0.16 as input
+    // Mode button as input (P0.16)
     LPC_GPIO0->FIODIR &= ~MODE_BUTTON;
+
+    lcd_init(); // ✅ Initialize LCD only once
 
     unsigned char msg[20];
 
     while(1) {
-        // Check mode switch button
+        // Mode switch with debounce
         if ((LPC_GPIO0->FIOPIN & MODE_BUTTON) == 0) {
+            debounce_button();
             mode = !mode;
             if (mode) display_lcd((unsigned char *)"Registration Mode");
             else display_lcd((unsigned char *)"Check Mode");
@@ -78,41 +87,50 @@ int main(void) {
 
         while(1) {
             input_keyboard(); // sets row and col
-            if (row<3 && col<3) { 
+            if (row < 4 && col < 4) {
                 unsigned char key = KeyMap[MatrixMap[row][col]];
-                inputID = inputID*10 + (key - '0');
-                digitCount++;
-                sprintf((char *)msg,"ID: %04u",inputID);
-                display_lcd(msg);
-                delayMS(300);
 
-                if(digitCount == 4) break; // 4-digit entry complete
+                // Only allow numeric keys
+                if (key >= '0' && key <= '9') {
+                    inputID = inputID*10 + (key - '0');
+                    digitCount++;
+                    sprintf((char *)msg,"ID: %04u",inputID);
+                    display_lcd(msg);
+                    delayMS(300);
+                }
+
+                if (digitCount == 4) break; // 4-digit entry complete
             }
         }
 
         // Check mode
-        if(!mode) {
+        if (!mode) {
             unsigned char found = 0;
-            for(int i=0;i<totalIDs;i++) {
-                if(registeredIDs[i] == inputID) {
+            for (int i = 0; i < totalIDs; i++) {
+                if (registeredIDs[i] == inputID) {
                     found = 1; break;
                 }
             }
-            if(found) { display_lcd((unsigned char *)"Matched"); buzzer_success(); }
+            if (found) { display_lcd((unsigned char *)"Matched"); buzzer_success(); }
             else { display_lcd((unsigned char *)"Not Enrolled"); buzzer_error(); }
         }
         // Registration mode
         else {
             unsigned char exists = 0;
-            for(int i=0;i<totalIDs;i++) {
-                if(registeredIDs[i] == inputID) {
+            for (int i = 0; i < totalIDs; i++) {
+                if (registeredIDs[i] == inputID) {
                     exists = 1; break;
                 }
             }
-            if(exists) { display_lcd((unsigned char *)"Already Exists"); buzzer_error(); }
-            else {
-                registeredIDs[totalIDs++] = inputID;
-                display_lcd((unsigned char *)"Registered"); buzzer_success();
+            if (exists) {
+                display_lcd((unsigned char *)"Already Exists"); buzzer_error();
+            } else {
+                if (totalIDs < MAX_IDS) {
+                    registeredIDs[totalIDs++] = inputID;
+                    display_lcd((unsigned char *)"Registered"); buzzer_success();
+                } else {
+                    display_lcd((unsigned char *)"Limit Reached"); buzzer_error();
+                }
             }
         }
 
@@ -135,51 +153,66 @@ void buzzer_error(void) {
 }
 
 void input_keyboard(void) {
-    int Break_flag=0;
-    row=0; col=0;
-    while(1) {
-        for(row=0;row<3;row++) {
-            temp = 1<<(10+row);
+    int Break_flag = 0;
+    row = 0; col = 0;
+    while (1) {
+        for (row = 0; row < 4; row++) {
+            temp = 1 << (10 + row);
             LPC_GPIO2->FIOPIN = temp;
-            flag=0;
+            flag = 0;
             delayMS(10);
             scan();
-            if(flag==1) { Break_flag=1; delayMS(50); break; }
+            if (flag == 1) { Break_flag = 1; delayMS(50); break; }
         }
-        if(Break_flag==1) break;
+        if (Break_flag == 1) break;
     }
 }
 
 void scan(void) {
     unsigned long temp3;
     temp3 = LPC_GPIO1->FIOPIN & 0x07800000;
-    if(temp3!=0x0) {
-        flag=1;
-        if(temp3 == 1<<23) col=0;
-        else if(temp3 == 1<<24) col=1;
-        else if(temp3 == 1<<25) col=2;
-        else if(temp3 == 1<<26) col=3;
+    if (temp3 != 0x0) {
+        flag = 1;
+        if (temp3 == 1 << 23) col = 0;
+        else if (temp3 == 1 << 24) col = 1;
+        else if (temp3 == 1 << 25) col = 2;
+        else if (temp3 == 1 << 26) col = 3;
+    }
+}
+
+void lcd_init(void) {
+    flag1 = 0;
+    unsigned long init_command[] = {0x30,0x30,0x30,0x20,0x28,0x0c,0x06,0x01,0x80};
+    for (int i = 0; i < 9; i++) {
+        temp1 = init_command[i];
+        lcd_write();
     }
 }
 
 void display_lcd(unsigned char msg[]) {
-    flag1=0; // COMMAND
-    unsigned long init_command[] = {0x30,0x30,0x30,0x20,0x28,0x0c,0x06,0x01,0x80};
-    for(int i=0;i<9;i++) { temp1 = init_command[i]; lcd_write(); }
-    flag1=1; // DATA
-    for(int i=0;msg[i]!='\0';i++) { temp1=msg[i]; lcd_write(); }
+    flag1 = 0;
+    temp1 = 0x01; // clear display
+    lcd_write();
+    flag1 = 1;
+    for (int i = 0; msg[i] != '\0'; i++) {
+        temp1 = msg[i];
+        lcd_write();
+    }
 }
 
 void lcd_write(void) {
-    flag2 = (flag1==1)?0:((temp1==0x30)||(temp1==0x20))?1:0;
-    temp2 = temp1 & 0xf0;
+    flag2 = (flag1 == 1) ? 0 : ((temp1 == 0x30) || (temp1 == 0x20)) ? 1 : 0;
+    temp2 = temp1 & 0xF0;
     port_write();
-    if(flag2==0) { temp2 = (temp1 & 0x0f)<<4; port_write(); }
+    if (flag2 == 0) {
+        temp2 = (temp1 & 0x0F) << 4;
+        port_write();
+    }
 }
 
 void port_write(void) {
     LPC_GPIO0->FIOPIN = temp2;
-    if(flag1==0) LPC_GPIO0->FIOCLR = RS_CTRL;
+    if (flag1 == 0) LPC_GPIO0->FIOCLR = RS_CTRL;
     else LPC_GPIO0->FIOSET = RS_CTRL;
     LPC_GPIO0->FIOSET = EN_CTRL;
     delay_lcd(25);
@@ -187,5 +220,16 @@ void port_write(void) {
     delay_lcd(3000);
 }
 
-void delay_lcd(unsigned int r1) { for(unsigned int r=0;r<r1;r++); }
-void delayMS(unsigned int milliseconds) { for(unsigned int i=0;i<milliseconds*1000;i++); }
+void delay_lcd(unsigned int r1) {
+    for (unsigned int r = 0; r < r1; r++);
+}
+
+void delayMS(unsigned int milliseconds) {
+    for (unsigned int i = 0; i < milliseconds * 1000; i++);
+}
+
+void debounce_button(void) {
+    delayMS(50); // debounce delay
+    while ((LPC_GPIO0->FIOPIN & MODE_BUTTON) == 0); // wait for release
+    delayMS(50); // debounce delay after release
+}
